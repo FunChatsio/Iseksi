@@ -12,8 +12,21 @@
     charismaValue: $("charismaValue"), privateHistory: $("privateHistory"), creatorError: $("creatorError"),
     worldTitle: $("worldTitle"), worldDate: $("worldDate"), messageList: $("messageList"), chatForm: $("chatForm"),
     chatInput: $("chatInput"), sendButton: $("sendButton"), typingStatus: $("typingStatus"), exportButton: $("exportButton"),
-    homeFromChatButton: $("homeFromChatButton"), creatorSubmitButton: $("characterForm").querySelector('button[type="submit"]'), chatNotice: $("chatNotice"), saveIndicator: $("saveIndicator"), toast: $("toast")
+    homeFromChatButton: $("homeFromChatButton"), creatorSubmitButton: $("characterForm")?.querySelector('button[type="submit"]') || null, chatNotice: $("chatNotice"), saveIndicator: $("saveIndicator"), toast: $("toast")
   };
+
+  const requiredDomIds = [
+    "pinScreen", "pinForm", "pinInput", "pinStatus", "homeScreen", "creatorScreen", "chatScreen",
+    "characterForm", "characterName", "appearance", "ageInput", "charismaInput", "privateHistory",
+    "creatorError", "messageList", "chatForm", "chatInput", "sendButton"
+  ];
+  const missingDomIds = requiredDomIds.filter((id) => !$(id));
+  if (missingDomIds.length) {
+    console.error("Isekai frontend files are out of sync. Missing HTML elements:", missingDomIds.join(", "));
+    const status = $("pinStatus");
+    if (status) status.textContent = `Page files are mismatched. Update index.html and script.js together. Missing: ${missingDomIds.join(", ")}`;
+    return;
+  }
 
   const STORAGE_KEY = "isekai_autosave_enc_v1";
   const BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
@@ -667,3 +680,4 @@
 
   connectMqtt();
 })();
+
