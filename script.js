@@ -16,7 +16,36 @@
   };
 
   const STORAGE_KEY = "isekai_autosave_enc_v1";
-  const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  const BACKEND_WS_STORAGE_KEY = "isekai_backend_ws_url_v1";
+
+  // GitHub Pages is static hosting, so its own hostname is not the Python
+  // WebSocket server. Configure the backend once via ?ws=wss%3A%2F%2FHOST%2Fws.
+  // The query value is validated and remembered in this browser's localStorage.
+  function resolveWebSocketUrl() {
+    const queryValue = new URLSearchParams(location.search).get("ws");
+    const candidates = [queryValue, localStorage.getItem(BACKEND_WS_STORAGE_KEY)];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      try {
+        const url = new URL(candidate);
+        if (!["ws:", "wss:"].includes(url.protocol)) continue;
+        if (url.username || url.password || url.hash || url.pathname !== "/ws") continue;
+        if (location.protocol === "https:" && url.protocol !== "wss:") continue;
+        if (queryValue && candidate === queryValue) {
+          localStorage.setItem(BACKEND_WS_STORAGE_KEY, url.href);
+        }
+        return url.href;
+      } catch (_) {
+        // Ignore invalid saved/query values and fall back to local development.
+      }
+    }
+    const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+    if (localHosts.has(location.hostname)) {
+      return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+    }
+    return null;
+  }
+  const WS_URL = resolveWebSocketUrl();
   let ws = null;
   let cryptoKey = null;
   let clientOutSeq = 0;
@@ -54,7 +83,8 @@
     els.connectionBadge.textContent = label;
     els.connectionBadge.classList.toggle("offline", !connected);
     if (!connected) {
-      setPinStatus("Can't reach the local story server. Start isekai_server.py and refresh this page.", true);
+      const destination = WS_URL || "a configured WebSocket backend";
+      setPinStatus(`Can't reach ${destination}. Check that isekai_server.py and your tunnel are running.`, true);
     }
   }
 
@@ -93,7 +123,11 @@
   let ephemeralKeyPair = null;
 
   function connect() {
-    setPinStatus("Connecting to your local world…");
+    if (!WS_URL) {
+      setPinStatus("GitHub Pages needs your Python backend URL. Open this page with ?ws=wss%3A%2F%2FYOUR-TUNNEL.trycloudflare.com%2Fws after starting the tunnel.", true);
+      return;
+    }
+    setPinStatus(`Connecting to story server at ${new URL(WS_URL).host}…`);
     try {
       ws = new WebSocket(WS_URL);
       ws.addEventListener("open", async () => {
@@ -157,7 +191,7 @@
         authenticated = true;
         currentPin = els.pinInput.value.trim();
         els.pinInput.value = "";
-        setConnection(true, "Local & encrypted");
+        setConnection(true, "Secure & encrypted");
         showScreen(els.homeScreen);
         els.homeStatus.textContent = "";
         try {
