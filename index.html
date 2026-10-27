@@ -21,6 +21,7 @@
         <input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="current-password" placeholder="Enter your code" required>
         <button class="primary-button" type="submit">Enter the world <span>↗</span></button>
         <p id="pinStatus" class="status-line" aria-live="polite">Connecting to public HiveMQ…</p>
+      </form>
       <div class="launch-help">
         <p class="muted">The site connects through the public HiveMQ broker. Start <code>isekai_server.py</code> on your laptop alongside your existing DeepSeek bridge. No IP address, broker account, or manually entered secret is required.</p>
         <p class="fine-print">This public-broker demo follows the same fixed-key format as your supplied demotest.py and is intended for testing, not private production data.</p>
@@ -61,16 +62,16 @@
           <div class="field-grid">
             <div class="field full-field">
               <label for="characterName">Name</label>
-              <input id="characterName" maxlength="80" placeholder="What are you called?" required>
+              <input id="characterName" name="characterName" maxlength="80" placeholder="What are you called?" required>
             </div>
             <div class="field full-field">
               <label for="appearance">Appearance</label>
-              <textarea id="appearance" rows="3" maxlength="1800" placeholder="Hair, eyes, build, skin, features, clothing… Describe what people actually see." required></textarea>
+              <textarea id="appearance" name="appearance" rows="3" maxlength="1800" placeholder="Hair, eyes, build, skin, features, clothing… Describe what people actually see." required></textarea>
               <small>NPCs will react to these visible traits.</small>
             </div>
             <div class="field">
               <label for="ageInput">Physical age</label>
-              <div class="age-control"><input id="ageInput" type="number" min="5" max="100" value="12" required><span id="ageHint">A child’s body (5–17)</span></div>
+              <div class="age-control"><input id="ageInput" name="age_years" type="number" min="5" max="100" value="12" required><span id="ageHint">A child’s body (5–17)</span></div>
             </div>
             <div class="field">
               <div class="label-row"><label for="charismaInput">Charisma</label><output id="charismaValue" for="charismaInput">50</output></div>
