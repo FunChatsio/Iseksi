@@ -40,6 +40,15 @@
   let lastServerPackets = [];
   let serverMessageChain = Promise.resolve();
 
+  // Centralized status helper used by the PIN screen and MQTT connection flow.
+  // This was missing in the GitHub Pages build, causing connect() to throw
+  // before the MQTT session could be established.
+  function setPinStatus(message, isError = false) {
+    if (!els.pinStatus) return;
+    els.pinStatus.textContent = String(message ?? "");
+    els.pinStatus.classList.toggle("error", Boolean(isError));
+  }
+
   function normaliseTopicRoot(value) {
     const root = String(value || "").trim().replace(/^\/+|\/+$/g, "");
     if (!root || /[+#\s]/.test(root) || root.split("/").some((p) => !p || p === "." || p === "..")) {
