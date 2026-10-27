@@ -12,21 +12,8 @@
     charismaValue: $("charismaValue"), privateHistory: $("privateHistory"), creatorError: $("creatorError"),
     worldTitle: $("worldTitle"), worldDate: $("worldDate"), messageList: $("messageList"), chatForm: $("chatForm"),
     chatInput: $("chatInput"), sendButton: $("sendButton"), typingStatus: $("typingStatus"), exportButton: $("exportButton"),
-    homeFromChatButton: $("homeFromChatButton"), creatorSubmitButton: $("characterForm")?.querySelector('button[type="submit"]') || null, chatNotice: $("chatNotice"), saveIndicator: $("saveIndicator"), toast: $("toast")
+    homeFromChatButton: $("homeFromChatButton"), creatorSubmitButton: $("characterForm").querySelector('button[type="submit"]'), chatNotice: $("chatNotice"), saveIndicator: $("saveIndicator"), toast: $("toast")
   };
-
-  const requiredDomIds = [
-    "pinScreen", "pinForm", "pinInput", "pinStatus", "homeScreen", "creatorScreen", "chatScreen",
-    "characterForm", "characterName", "appearance", "ageInput", "charismaInput", "privateHistory",
-    "creatorError", "messageList", "chatForm", "chatInput", "sendButton"
-  ];
-  const missingDomIds = requiredDomIds.filter((id) => !$(id));
-  if (missingDomIds.length) {
-    console.error("Isekai frontend files are out of sync. Missing HTML elements:", missingDomIds.join(", "));
-    const status = $("pinStatus");
-    if (status) status.textContent = `Page files are mismatched. Update index.html and script.js together. Missing: ${missingDomIds.join(", ")}`;
-    return;
-  }
 
   const STORAGE_KEY = "isekai_autosave_enc_v1";
   const BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
@@ -53,6 +40,10 @@
   let toastTimer = null;
   let pendingRequest = null;
   let sendChain = Promise.resolve();
+  // WebCrypto decrypt is asynchronous. Queue MQTT frames so a fast terminal event
+  // can never overtake earlier token frames and reset the visible response.
+  let inboundMessageChain = Promise.resolve();
+  let lastServerSequence = -1;
 
   function setPinStatus(message, isError = false) {
     if (!els.pinStatus) return;
@@ -142,7 +133,7 @@
       mqttClient.on("connect", () => {
         mqttConnected = true;
         setConnection(false, "Subscribing…");
-        mqttClient.subscribe(responseTopic, { qos: 0 }, (error) => {
+        mqttClient.subscribe(responseTopic, { qos: 1 }, (error) => {
           if (error) {
             mqttSubscribed = false;
             setConnection(false, "Subscribe failed");
@@ -171,7 +162,11 @@
       });
       mqttClient.on("message", (topic, payload) => {
         if (topic !== responseTopic) return;
-        receiveMqttResponse(new TextDecoder().decode(payload));
+        const encoded = new TextDecoder().decode(payload);
+        // Preserve broker delivery order across async AES-GCM decryptions.
+        inboundMessageChain = inboundMessageChain
+          .then(() => receiveMqttResponse(encoded))
+          .catch((error) => console.error("Ordered MQTT message handler failed", error));
       });
     }).catch((error) => {
       setConnection(false, "Encryption unavailable");
@@ -183,6 +178,13 @@
     try {
       const message = await decryptPayload(encoded);
       if (!message || typeof message !== "object") throw new Error("Decrypted response is not an event object.");
+      if (Number.isInteger(message.stream_seq)) {
+        if (message.stream_seq <= lastServerSequence) return; // QoS 1 may redeliver.
+        if (lastServerSequence >= 0 && message.stream_seq !== lastServerSequence + 1) {
+          console.warn(`MQTT response sequence gap: expected ${lastServerSequence + 1}, got ${message.stream_seq}`);
+        }
+        lastServerSequence = message.stream_seq;
+      }
       await handleBody(message);
       if (pendingRequest && isTerminalEvent(pendingRequest.type, message.type)) {
         const pending = pendingRequest;
@@ -240,6 +242,7 @@
     await waitForMqtt();
     if (pendingRequest) throw new Error("Another request is still running. Wait for it to finish.");
     return new Promise(async (resolve, reject) => {
+      lastServerSequence = -1;
       const pending = { type: body.type, resolve, reject, timeout: null };
       pending.timeout = setTimeout(() => {
         if (pendingRequest !== pending) return;
@@ -252,7 +255,7 @@
         const requestData = JSON.stringify({ clientId, prompt: JSON.stringify(body), image: "" });
         const encrypted = await encryptPayload(requestData);
         if (!mqttConnected || !mqttSubscribed) throw new Error("HiveMQ disconnected before the request could be sent.");
-        mqttClient.publish(REQUEST_TOPIC, encrypted, { qos: 0, retain: false }, (error) => {
+        mqttClient.publish(REQUEST_TOPIC, encrypted, { qos: 1, retain: false }, (error) => {
           if (error && pendingRequest === pending) {
             pendingRequest = null;
             clearTimeout(pending.timeout);
@@ -340,11 +343,22 @@
         renderMessageBody(currentAssistantElement, currentAssistantText);
         scrollToBottom();
         break;
-      case "turn_complete":
+      case "turn_complete": {
         els.creatorSubmitButton.disabled = false;
         if (message.save) currentSave = message.save;
-        if (currentAssistantElement && currentAssistantText.trim()) {
+        // The saved answer is canonical. Reconcile it into the live chat before
+        // completing the turn, even if a broker/browser dropped all token events.
+        const savedMessages = Array.isArray(currentSave?.messages) ? currentSave.messages : [];
+        const finalAssistant = [...savedMessages].reverse().find((item) => item?.role === "assistant");
+        const canonicalText = (typeof finalAssistant?.content === "string" && finalAssistant.content.trim())
+          ? finalAssistant.content
+          : (typeof message.text === "string" ? message.text : "");
+        if (canonicalText.trim()) {
+          if (!currentAssistantElement) currentAssistantElement = addMessage("assistant", canonicalText);
+          else renderMessageBody(currentAssistantElement, canonicalText);
+          currentAssistantText = canonicalText;
           currentAssistantElement.dataset.messageId = `assistant-${Date.now()}`;
+          scrollToBottom();
         }
         setWaiting(false);
         updateWorldHeader();
@@ -363,6 +377,7 @@
         currentAssistantText = "";
         els.chatInput.focus();
         break;
+      }
       case "story_error":
         els.creatorSubmitButton.disabled = false;
         setWaiting(false);
@@ -378,6 +393,8 @@
         if (message.save) currentSave = message.save;
         break;
       case "server_error":
+        setWaiting(false);
+        els.creatorSubmitButton.disabled = false;
         toast(message.message || "Server error.");
         break;
       case "pong":
@@ -680,4 +697,3 @@
 
   connectMqtt();
 })();
-
