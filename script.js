@@ -49,6 +49,35 @@
     els.pinStatus.classList.toggle("error", Boolean(isError));
   }
 
+  // Shared UI helpers. Keep these defined in one place so every connection
+  // and navigation path can safely update the UI.
+  function setConnection(connected, label = "Disconnected") {
+    if (!els.connectionBadge) return;
+    els.connectionBadge.textContent = String(label || (connected ? "Connected" : "Disconnected"));
+    els.connectionBadge.classList.toggle("offline", !connected);
+    els.connectionBadge.setAttribute("aria-label", `Connection status: ${els.connectionBadge.textContent}`);
+  }
+
+  function showScreen(target) {
+    const screens = [els.pinScreen, els.homeScreen, els.creatorScreen, els.chatScreen];
+    for (const screen of screens) {
+      if (!screen) continue;
+      screen.classList.toggle("hidden", screen !== target);
+      screen.setAttribute("aria-hidden", screen === target ? "false" : "true");
+    }
+  }
+
+  function toast(message) {
+    if (!els.toast) return;
+    els.toast.textContent = String(message ?? "");
+    els.toast.classList.remove("hidden");
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      els.toast.classList.add("hidden");
+      toastTimer = null;
+    }, 3600);
+  }
+
   function normaliseTopicRoot(value) {
     const root = String(value || "").trim().replace(/^\/+|\/+$/g, "");
     if (!root || /[+#\s]/.test(root) || root.split("/").some((p) => !p || p === "." || p === "..")) {
