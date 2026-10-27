@@ -39,11 +39,12 @@
   let waitingForTurn = false;
   let toastTimer = null;
   let pendingRequest = null;
+  let activeRequestId = null;
+  const serverSequences = new Map();
   let sendChain = Promise.resolve();
-  // WebCrypto decrypt is asynchronous. Queue MQTT frames so a fast terminal event
-  // can never overtake earlier token frames and reset the visible response.
+  // WebCrypto decrypt is asynchronous. Queue MQTT frames so token/terminal order
+  // is preserved even when decryption promises resolve at different times.
   let inboundMessageChain = Promise.resolve();
-  let lastServerSequence = -1;
 
   function setPinStatus(message, isError = false) {
     if (!els.pinStatus) return;
@@ -178,15 +179,24 @@
     try {
       const message = await decryptPayload(encoded);
       if (!message || typeof message !== "object") throw new Error("Decrypted response is not an event object.");
+      const responseRequestId = typeof message.request_id === "string" ? message.request_id : null;
+      // A previous turn can still have broker-delayed packets. Never let those
+      // packets reset the current turn's sequence counter or overwrite its DOM.
+      if (responseRequestId && activeRequestId && responseRequestId !== activeRequestId) {
+        console.debug("Ignoring stale MQTT event", message.type, responseRequestId);
+        return;
+      }
       if (Number.isInteger(message.stream_seq)) {
-        if (message.stream_seq <= lastServerSequence) return; // QoS 1 may redeliver.
-        if (lastServerSequence >= 0 && message.stream_seq !== lastServerSequence + 1) {
-          console.warn(`MQTT response sequence gap: expected ${lastServerSequence + 1}, got ${message.stream_seq}`);
+        const sequenceKey = responseRequestId || activeRequestId || "legacy";
+        const previousSequence = serverSequences.get(sequenceKey) ?? -1;
+        if (message.stream_seq <= previousSequence) return; // QoS 1 may redeliver.
+        if (previousSequence >= 0 && message.stream_seq !== previousSequence + 1) {
+          console.warn(`MQTT response sequence gap for ${sequenceKey}: expected ${previousSequence + 1}, got ${message.stream_seq}`);
         }
-        lastServerSequence = message.stream_seq;
+        serverSequences.set(sequenceKey, message.stream_seq);
       }
       await handleBody(message);
-      if (pendingRequest && isTerminalEvent(pendingRequest.type, message.type)) {
+      if (pendingRequest && (!responseRequestId || responseRequestId === pendingRequest.requestId) && isTerminalEvent(pendingRequest.type, message.type)) {
         const pending = pendingRequest;
         pendingRequest = null;
         clearTimeout(pending.timeout);
@@ -242,17 +252,21 @@
     await waitForMqtt();
     if (pendingRequest) throw new Error("Another request is still running. Wait for it to finish.");
     return new Promise(async (resolve, reject) => {
-      lastServerSequence = -1;
-      const pending = { type: body.type, resolve, reject, timeout: null };
+      const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^a-zA-Z0-9_-]/g, "");
+      activeRequestId = requestId;
+      serverSequences.set(requestId, -1);
+      // Keep the normal demotest.py envelope. Correlation metadata lives inside
+      // the JSON prompt so the public MQTT topics remain unchanged.
+      const action = { ...body, request_id: requestId };
+      const pending = { type: body.type, requestId, resolve, reject, timeout: null };
       pending.timeout = setTimeout(() => {
         if (pendingRequest !== pending) return;
         pendingRequest = null;
-        reject(new Error("No response arrived from the Python worker. Make sure isekai_server.py and the DeepSeek bridge are running."));
+        reject(new Error("No response arrived from the Python worker. Check the isekai server and local DeepSeek bridge."));
       }, 12 * 60 * 1000);
       pendingRequest = pending;
       try {
-        // Exact demotest.py envelope fields: clientId, prompt, image.
-        const requestData = JSON.stringify({ clientId, prompt: JSON.stringify(body), image: "" });
+        const requestData = JSON.stringify({ clientId, prompt: JSON.stringify(action), image: "" });
         const encrypted = await encryptPayload(requestData);
         if (!mqttConnected || !mqttSubscribed) throw new Error("HiveMQ disconnected before the request could be sent.");
         mqttClient.publish(REQUEST_TOPIC, encrypted, { qos: 1, retain: false }, (error) => {
@@ -321,11 +335,13 @@
         els.messageList.innerHTML = "";
         showScreen(els.chatScreen);
         updateWorldHeader();
+        currentAssistantElement = addMessage("assistant", "");
         setWaiting(true);
         break;
       case "turn_begin":
         currentSave = message.save || currentSave;
-        currentAssistantElement = null;
+        showScreen(els.chatScreen);
+        currentAssistantElement = addMessage("assistant", "");
         currentAssistantText = "";
         setWaiting(true);
         break;
@@ -335,15 +351,18 @@
         els.typingStatus.classList.remove("hidden");
         break;
       case "token":
+        showScreen(els.chatScreen);
         appendAssistantToken(String(message.text || ""));
         break;
       case "replace":
+        showScreen(els.chatScreen);
         currentAssistantText = String(message.text || "");
         ensureAssistantElement();
         renderMessageBody(currentAssistantElement, currentAssistantText);
         scrollToBottom();
         break;
       case "turn_complete": {
+        showScreen(els.chatScreen);
         els.creatorSubmitButton.disabled = false;
         if (message.save) currentSave = message.save;
         // The saved answer is canonical. Reconcile it into the live chat before
@@ -352,7 +371,7 @@
         const finalAssistant = [...savedMessages].reverse().find((item) => item?.role === "assistant");
         const canonicalText = (typeof finalAssistant?.content === "string" && finalAssistant.content.trim())
           ? finalAssistant.content
-          : (typeof message.text === "string" ? message.text : "");
+          : (typeof message.text === "string" && message.text.trim() ? message.text : currentAssistantText);
         if (canonicalText.trim()) {
           if (!currentAssistantElement) currentAssistantElement = addMessage("assistant", canonicalText);
           else renderMessageBody(currentAssistantElement, canonicalText);
